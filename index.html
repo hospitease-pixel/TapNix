@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lomi Smart Cards</title>
+    <title>TapNix</title>
     <meta name="theme-color" content="#111827" />
     <meta property="og:title" content="Sofonias Genanaw - Digital Business Card" />
     <meta property="og:description" content="Sales &amp; Marketing Manager at TapNix. One Tap. Done." />
@@ -26,7 +26,7 @@
         .graph-pattern-background { background-image: radial-gradient(#e5e7eb 1px, transparent 1px); background-size: 20px 20px; }
         .static-watermark { opacity: 0.00001; width: 1%; height: 1%; filter: grayscale(1%); }
         .hidden-view { display: none !important; }
-        #syncStatus { position: fixed; bottom: 10px; right: 10px; padding: 4px 10px; border-radius: 20px; font-size: 10px; font-weight: bold; z-index: 1000; }
+        #syncStatus { display: none !important; }
         .status-online { background: #dcfce7; color: #166534; border: 1px solid #166534; }
         .status-offline { background: #fee2e2; color: #991b1b; border: 1px solid #991b1b; }
         #loadingOverlay { position: fixed; inset: 0; background: rgba(17, 24, 39, 0.8); backdrop-filter: blur(4px); display: none; justify-content: center; align-items: center; z-index: 9999; }
@@ -262,6 +262,10 @@
                             <input type="color" id="colorBio" class="w-full h-10 p-1 border rounded">
                         </div>
                         <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase">Separator</label>
+                            <input type="color" id="colorSeparator" class="w-full h-10 p-1 border rounded">
+                        </div>
+                        <div>
                             <label class="block text-[10px] font-bold text-gray-400 uppercase">Wave Border</label>
                             <input type="color" id="colorWave" class="w-full h-10 p-1 border rounded">
                         </div>
@@ -276,6 +280,26 @@
                         <div>
                             <label class="block text-[10px] font-bold text-gray-400 uppercase">Util Btn</label>
                             <input type="color" id="colorUtilBtn" class="w-full h-10 p-1 border rounded">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase">Main Btn Text</label>
+                            <input type="color" id="colorMainBtnText" class="w-full h-10 p-1 border rounded">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase">Contact Btn Text</label>
+                            <input type="color" id="colorContactBtnText" class="w-full h-10 p-1 border rounded">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase">Util Btn Text</label>
+                            <input type="color" id="colorUtilBtnText" class="w-full h-10 p-1 border rounded">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase">QR Btn Text</label>
+                            <input type="color" id="colorQrBtnText" class="w-full h-10 p-1 border rounded">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase">Order Btn Text</label>
+                            <input type="color" id="colorOrderBtnText" class="w-full h-10 p-1 border rounded">
                         </div>
                      </div>
                  </div>
@@ -312,7 +336,7 @@
             title: "Sales & Marketing Manager",
             bio: "",
             image: "https://i.ibb.co/VYgNpFPY/f97ad8c3-a99e-449e-8c0e-f4fcd3d6b112.png",
-            logo: "https://i.ibb.co/Xxd1F0v7/Tap-Nix-Logo-1.png",
+            logo: "https://i.ibb.co/SwR502xf/Untitled-design-10.png",
             phones: ["+251920508303", "+251981519575"],
             emails: [],
             website: "",
@@ -329,8 +353,10 @@
                 cardBg: "#ffffff",
                 coverBg: "#ffffff",
                 name: "#111827", org: "#2563eb", title: "#1f2937",
-                bio: "#6b7280", wave: "#3b82f6", mainBtn: "#2563eb",
-                contactBtn: "#000000", utilBtn: "#f3f4f6"
+                bio: "#6b7280", separator: "#9ca3af", wave: "#3b82f6", mainBtn: "#2563eb",
+                contactBtn: "#000000", utilBtn: "#f3f4f6", mainBtnText: "#ffffff",
+                contactBtnText: "#ffffff", utilBtnText: "#1f2937", qrBtnText: "#1f2937",
+                orderBtnText: "#1f2937"
             }
         };
 
@@ -340,6 +366,8 @@
         let syncUnsubscribe = null;
         let pendingCloudSave = null;
         let cloudSaveInFlight = false;
+        let authInitPromise = null;
+        let authListenerBound = false;
         const loadedScripts = {};
 
         const PLATFORMS = {
@@ -406,6 +434,7 @@
 
         function setSyncStatus(text, isOnline) {
             const statusEl = document.getElementById('syncStatus');
+            if (!statusEl) return;
             statusEl.textContent = text;
             statusEl.className = isOnline ? "status-online" : "status-offline";
         }
@@ -438,7 +467,7 @@
             }
 
             const storedKey = data._profileKey || "";
-            const legacyLogo = "https://i.ibb.co/Xxd1F0v7/Tap-Nix-Logo-1.png";
+            const legacyLogo = "https://i.ibb.co/SwR502xf/Untitled-design-10.png";
 
             if (storedKey === "tapnix-v1") {
                 return normalizeContactData({
@@ -634,6 +663,10 @@
             cachePendingCloudSave(normalizedData);
 
             if (!isCloudSynced || !firebaseClient) {
+                await initAuth();
+            }
+
+            if (!isCloudSynced || !firebaseClient) {
                 setSyncStatus("SYNC: PENDING", false);
                 return false;
             }
@@ -662,23 +695,38 @@
         }
 
         async function initAuth() {
-            try {
-                setSyncStatus("SYNC: LOADING", false);
-                const client = await initCloudClient();
-                client.onAuthStateChanged(client.auth, (user) => {
-                    if (user) {
+            if (authInitPromise) return authInitPromise;
+            authInitPromise = (async () => {
+                try {
+                    setSyncStatus("SYNC: LOADING", false);
+                    const client = await initCloudClient();
+                    if (!authListenerBound) {
+                        client.onAuthStateChanged(client.auth, (user) => {
+                            if (user) {
+                                isCloudSynced = true;
+                                setSyncStatus("SYNC: CONNECTED", true);
+                                startSync();
+                            } else if (!isCloudSynced) {
+                                setSyncStatus("SYNC: OFFLINE", false);
+                            }
+                        });
+                        authListenerBound = true;
+                    }
+                    await client.signInAnonymously(client.auth);
+                    if (client.auth.currentUser && !isCloudSynced) {
                         isCloudSynced = true;
                         setSyncStatus("SYNC: CONNECTED", true);
                         startSync();
-                    } else if (!isCloudSynced) {
-                        setSyncStatus("SYNC: OFFLINE", false);
                     }
-                });
-                await client.signInAnonymously(client.auth);
-            } catch (err) {
-                isCloudSynced = false;
-                setSyncStatus("SYNC: OFFLINE", false);
-            }
+                    return true;
+                } catch (err) {
+                    isCloudSynced = false;
+                    setSyncStatus("SYNC: OFFLINE", false);
+                    authInitPromise = null;
+                    return false;
+                }
+            })();
+            return authInitPromise;
         }
 
         function startSync() {
@@ -749,11 +797,13 @@
             document.getElementById('display-org').style.display = hasOrg ? "" : "none";
             document.getElementById('display-title').style.display = hasTitle ? "" : "none";
             document.getElementById('display-org-title-separator').style.display = hasOrg && hasTitle ? "" : "none";
+            document.getElementById('display-org-title-separator').style.color = colors.separator;
             document.getElementById('display-bio').textContent = CONTACT_DATA.bio;
             document.getElementById('display-bio').style.color = colors.bio;
             document.getElementById('profilePicture').src = CONTACT_DATA.image;
             document.getElementById('companyLogo').src = CONTACT_DATA.logo;
-            const utilStyle = colors.utilBtn === '#f3f4f6' ? { bg: '#f3f4f6', text: '#1f2937' } : { bg: colors.utilBtn, text: 'white' };
+            const utilText = colors.utilBtnText || (colors.utilBtn === '#f3f4f6' ? '#1f2937' : '#ffffff');
+            const utilStyle = { bg: colors.utilBtn, text: utilText };
             
             document.getElementById('btn-website').style.backgroundColor = utilStyle.bg;
             document.getElementById('btn-website').style.color = utilStyle.text;
@@ -772,19 +822,23 @@
             }
 
             document.getElementById('downloadButton').style.backgroundColor = colors.mainBtn;
+            document.getElementById('downloadButton').style.color = colors.mainBtnText;
             document.getElementById('vcfButton').style.backgroundColor = colors.contactBtn;
+            document.getElementById('vcfButton').style.color = colors.contactBtnText;
+            document.getElementById('qrOpenBtn').style.color = colors.qrBtnText;
+            document.getElementById('orderNfcBtn').style.color = colors.orderBtnText;
             
             const phC = document.getElementById('phone-buttons-container');
             let contactHtml = "";
             (CONTACT_DATA.phones || []).forEach(num => {
                 contactHtml += `
-                    <a href="tel:${num}" class="contact-btn flex items-center justify-center px-4 py-2.5 text-sm text-white font-medium rounded-md" style="background-color: ${colors.mainBtn}">
+                    <a href="tel:${num}" class="contact-btn flex items-center justify-center px-4 py-2.5 text-sm font-medium rounded-md" style="background-color: ${colors.mainBtn};color:${colors.mainBtnText}">
                         <i data-lucide="phone" class="w-4 h-4 mr-2"></i>Call: ${num}
                     </a>`;
             });
             (CONTACT_DATA.emails || []).forEach(email => {
                 contactHtml += `
-                    <a href="mailto:${email}" class="contact-btn flex items-center justify-center px-4 py-2.5 text-sm text-white font-medium rounded-md" style="background-color: ${colors.mainBtn}">
+                    <a href="mailto:${email}" class="contact-btn flex items-center justify-center px-4 py-2.5 text-sm font-medium rounded-md" style="background-color: ${colors.mainBtn};color:${colors.mainBtnText}">
                         <i data-lucide="mail" class="w-4 h-4 mr-2"></i>Email: ${email}
                     </a>`;
             });
@@ -799,7 +853,7 @@
             document.getElementById('custom-links-container').innerHTML = (CONTACT_DATA.customLinks || []).filter(l => l.url && l.url.trim() !== "").map(link => `
                 <a href="${link.url}" target="_blank" rel="noopener noreferrer"
                 class="contact-btn flex items-center px-4 py-2 mb-1 rounded-lg text-xs font-bold shadow"
-                style="background:${colors.utilBtn};color:${colors.utilBtn === '#f3f4f6' ? '#1f2937':'white'};border:1px solid #d1d5db;">
+                style="background:${colors.utilBtn};color:${utilStyle.text};border:1px solid #d1d5db;">
                   <i data-lucide="link" class="w-4 h-4 mr-2"></i> ${link.tag || "Link"}
                 </a>`).join('');
 
@@ -981,10 +1035,16 @@
                 document.getElementById('colorOrg').value = c.org;
                 document.getElementById('colorTitle').value = c.title;
                 document.getElementById('colorBio').value = c.bio;
+                document.getElementById('colorSeparator').value = c.separator || "#9ca3af";
                 document.getElementById('colorWave').value = c.wave;
                 document.getElementById('colorMainBtn').value = c.mainBtn;
                 document.getElementById('colorContactBtn').value = c.contactBtn;
                 document.getElementById('colorUtilBtn').value = c.utilBtn;
+                document.getElementById('colorMainBtnText').value = c.mainBtnText || "#ffffff";
+                document.getElementById('colorContactBtnText').value = c.contactBtnText || "#ffffff";
+                document.getElementById('colorUtilBtnText').value = c.utilBtnText || (c.utilBtn === "#f3f4f6" ? "#1f2937" : "#ffffff");
+                document.getElementById('colorQrBtnText').value = c.qrBtnText || "#1f2937";
+                document.getElementById('colorOrderBtnText').value = c.orderBtnText || "#1f2937";
                 document.getElementById('editPhonesList').innerHTML = "";
                 (CONTACT_DATA.phones || []).forEach(p => createPhoneRow(p));
                 document.getElementById('editEmailsList').innerHTML = "";
@@ -1053,10 +1113,16 @@
                         org: document.getElementById('colorOrg').value,
                         title: document.getElementById('colorTitle').value,
                         bio: document.getElementById('colorBio').value,
+                        separator: document.getElementById('colorSeparator').value,
                         wave: document.getElementById('colorWave').value,
                         mainBtn: document.getElementById('colorMainBtn').value,
                         contactBtn: document.getElementById('colorContactBtn').value,
-                        utilBtn: document.getElementById('colorUtilBtn').value
+                        utilBtn: document.getElementById('colorUtilBtn').value,
+                        mainBtnText: document.getElementById('colorMainBtnText').value,
+                        contactBtnText: document.getElementById('colorContactBtnText').value,
+                        utilBtnText: document.getElementById('colorUtilBtnText').value,
+                        qrBtnText: document.getElementById('colorQrBtnText').value,
+                        orderBtnText: document.getElementById('colorOrderBtnText').value
                     }
                 });
 
