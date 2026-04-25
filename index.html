@@ -1,11 +1,10 @@
 
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TapNix</title>
+    <title>Lomi Smart Cards</title>
     <meta name="theme-color" content="#111827" />
     <meta property="og:title" content="Sofonias Genanaw - Digital Business Card" />
     <meta property="og:description" content="Sales &amp; Marketing Manager at TapNix. One Tap. Done." />
@@ -322,7 +321,8 @@
             measurementId: "G-YY97G59MNF"
         };
 
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'tapnix-card-v1';
+        const sharedAppId = 'tapnix-card-v1';
+        const runtimeAppId = typeof __app_id !== 'undefined' ? String(__app_id) : sharedAppId;
 
         const PROFILE_KEY = "tapnix-v2"; // Change this whenever you switch profiles
         const PROFILE_CACHE_STORAGE_KEY = 'cached_profile';
@@ -365,6 +365,7 @@
         let isCloudSynced = false;
         let firebaseClient = null;
         let syncUnsubscribe = null;
+        let syncStartPromise = null;
         let pendingCloudSave = null;
         let cloudSaveInFlight = false;
         let authInitPromise = null;
@@ -535,6 +536,19 @@
             }
         }
 
+        function getProfileDocTargetIds() {
+            const targetIds = [sharedAppId];
+            if (runtimeAppId && runtimeAppId !== sharedAppId) {
+                targetIds.push(runtimeAppId);
+            }
+            return targetIds;
+        }
+
+        function getProfileDocRef(targetAppId = sharedAppId) {
+            if (!firebaseClient) throw new Error("Firebase not initialised");
+            return firebaseClient.doc(firebaseClient.db, 'artifacts', targetAppId, 'public', 'data', 'profiles', 'main');
+        }
+
         function loadExternalScript(src) {
             if (loadedScripts[src]) return loadedScripts[src];
             loadedScripts[src] = new Promise((resolve, reject) => {
@@ -593,6 +607,7 @@
                 signInAnonymously: authModule.signInAnonymously,
                 onAuthStateChanged: authModule.onAuthStateChanged,
                 doc: firestoreModule.doc,
+                getDoc: firestoreModule.getDoc,
                 setDoc: firestoreModule.setDoc,
                 onSnapshot: firestoreModule.onSnapshot,
                 // Storage helpers
@@ -623,7 +638,6 @@
         }
 
         async function writeProfileToCloud(data) {
-            const docRef = firebaseClient.doc(firebaseClient.db, 'artifacts', appId, 'public', 'data', 'profiles', 'main');
             setSyncStatus("SYNC: SAVING", true);
 
             try {
@@ -633,24 +647,40 @@
 
                 if (saveData.image && saveData.image.startsWith('data:')) {
                     setSyncStatus("SYNC: UPLOADING IMAGE…", true);
-                    saveData.image = await uploadImageToStorage(saveData.image, `profiles/main/avatar`);
+                    saveData.image = await uploadImageToStorage(saveData.image, `profiles/${PROFILE_KEY}/avatar`);
                 }
                 if (saveData.logo && saveData.logo.startsWith('data:')) {
                     setSyncStatus("SYNC: UPLOADING LOGO…", true);
-                    saveData.logo = await uploadImageToStorage(saveData.logo, `profiles/main/logo`);
+                    saveData.logo = await uploadImageToStorage(saveData.logo, `profiles/${PROFILE_KEY}/logo`);
                 }
                 if (saveData.portfolio && saveData.portfolio.startsWith('data:')) {
                     setSyncStatus("SYNC: UPLOADING PORTFOLIO…", true);
-                    saveData.portfolio = await uploadImageToStorage(saveData.portfolio, `profiles/main/portfolio`);
+                    saveData.portfolio = await uploadImageToStorage(saveData.portfolio, `profiles/${PROFILE_KEY}/portfolio`);
                 }
 
-                await firebaseClient.setDoc(docRef, saveData);
+                let writeSucceeded = false;
+                let lastWriteError = null;
+
+                for (const targetAppId of getProfileDocTargetIds()) {
+                    try {
+                        await firebaseClient.setDoc(getProfileDocRef(targetAppId), saveData);
+                        writeSucceeded = true;
+                    } catch (err) {
+                        lastWriteError = err;
+                        console.warn(`Cloud save failed for ${targetAppId}:`, err);
+                    }
+                }
+
+                if (!writeSucceeded) {
+                    throw lastWriteError || new Error("Cloud save failed.");
+                }
 
                 // FIX: After successful upload, update CONTACT_DATA & cache with the real URLs
                 // so the card always uses the hosted URL (not the local base64 blob)
                 CONTACT_DATA = resolveStoredProfileData(saveData);
                 cacheContactData(CONTACT_DATA);
 
+                isCloudSynced = true;
                 setSyncStatus("SYNC: CONNECTED", true);
                 return CONTACT_DATA;
             } catch (err) {
@@ -663,11 +693,11 @@
             const normalizedData = resolveStoredProfileData(data);
             cachePendingCloudSave(normalizedData);
 
-            if (!isCloudSynced || !firebaseClient) {
+            if (!firebaseClient) {
                 await initAuth();
             }
 
-            if (!isCloudSynced || !firebaseClient) {
+            if (!firebaseClient) {
                 setSyncStatus("SYNC: PENDING", false);
                 return false;
             }
@@ -676,7 +706,7 @@
 
             cloudSaveInFlight = true;
             try {
-                while (pendingCloudSave && isCloudSynced && firebaseClient) {
+                while (pendingCloudSave && firebaseClient) {
                     const nextData = pendingCloudSave;
                     try {
                         const savedData = await writeProfileToCloud(nextData);
@@ -685,6 +715,7 @@
                         }
                     } catch (err) {
                         console.error("Cloud save failed:", err);
+                        isCloudSynced = false;
                         setSyncStatus("SYNC: PENDING", false);
                         return false;
                     }
@@ -706,18 +737,23 @@
                             if (user) {
                                 isCloudSynced = true;
                                 setSyncStatus("SYNC: CONNECTED", true);
-                                startSync();
+                                void startSync();
                             } else if (!isCloudSynced) {
                                 setSyncStatus("SYNC: OFFLINE", false);
                             }
                         });
                         authListenerBound = true;
                     }
-                    await client.signInAnonymously(client.auth);
-                    if (client.auth.currentUser && !isCloudSynced) {
+                    await startSync();
+                    try {
+                        await client.signInAnonymously(client.auth);
+                    } catch (err) {
+                        console.warn("Anonymous auth unavailable; continuing with direct cloud access.", err);
+                    }
+                    if (client.auth.currentUser) {
                         isCloudSynced = true;
                         setSyncStatus("SYNC: CONNECTED", true);
-                        startSync();
+                        await startSync();
                     }
                     return true;
                 } catch (err) {
@@ -730,38 +766,110 @@
             return authInitPromise;
         }
 
-        function startSync() {
-            if (!firebaseClient) return;
-            if (syncUnsubscribe) syncUnsubscribe();
-            const docRef = firebaseClient.doc(firebaseClient.db, 'artifacts', appId, 'public', 'data', 'profiles', 'main');
-            syncUnsubscribe = firebaseClient.onSnapshot(docRef, (snap) => {
+        async function startSync() {
+            if (!firebaseClient) return false;
+            if (syncUnsubscribe) return true;
+            if (syncStartPromise) return syncStartPromise;
+
+            syncStartPromise = (async () => {
                 const queuedData = loadPendingCloudSave();
-                if (snap.exists()) {
-                    const rawData = snap.data() || {};
-                    const remoteData = resolveStoredProfileData(rawData);
-                    const keepQueuedVersion = queuedData && getDataTimestamp(queuedData) > getDataTimestamp(remoteData);
+                let latestRemote = null;
+
+                try {
+                    const snapshots = await Promise.all(
+                        getProfileDocTargetIds().map(async (targetAppId) => {
+                            try {
+                                return {
+                                    targetAppId,
+                                    snapshot: await firebaseClient.getDoc(getProfileDocRef(targetAppId))
+                                };
+                            } catch (err) {
+                                console.warn(`Cloud read failed for ${targetAppId}:`, err);
+                                return { targetAppId, snapshot: null };
+                            }
+                        })
+                    );
+
+                    snapshots.forEach(({ targetAppId, snapshot }) => {
+                        if (!snapshot || !snapshot.exists()) return;
+                        const rawData = snapshot.data() || {};
+                        const remoteData = resolveStoredProfileData(rawData);
+                        if (!latestRemote || getDataTimestamp(remoteData) > getDataTimestamp(latestRemote.data)) {
+                            latestRemote = { targetAppId, rawData, data: remoteData };
+                        }
+                    });
+                } catch (err) {
+                    console.warn("Initial cloud load failed:", err);
+                }
+
+                if (latestRemote) {
+                    const keepQueuedVersion = queuedData && getDataTimestamp(queuedData) > getDataTimestamp(latestRemote.data);
                     if (keepQueuedVersion) {
                         CONTACT_DATA = queuedData;
                         cacheContactData(CONTACT_DATA);
                         renderUI();
                         void saveProfileToCloud(CONTACT_DATA);
-                        return;
-                    }
-
-                    CONTACT_DATA = remoteData;
-                    cacheContactData(CONTACT_DATA);
-                    renderUI();
-                    if (queuedData && getDataTimestamp(remoteData) >= getDataTimestamp(queuedData)) {
-                        clearPendingCloudSave();
-                    }
-                    if (rawData._profileKey !== CONTACT_DATA._profileKey || rawData.logo !== CONTACT_DATA.logo) {
-                        void saveProfileToCloud(CONTACT_DATA);
+                    } else {
+                        CONTACT_DATA = latestRemote.data;
+                        cacheContactData(CONTACT_DATA);
+                        renderUI();
+                        if (queuedData && getDataTimestamp(latestRemote.data) >= getDataTimestamp(queuedData)) {
+                            clearPendingCloudSave();
+                        }
+                        if (latestRemote.targetAppId !== sharedAppId || latestRemote.rawData._profileKey !== CONTACT_DATA._profileKey || latestRemote.rawData.logo !== CONTACT_DATA.logo) {
+                            void saveProfileToCloud(CONTACT_DATA);
+                        }
                     }
                 } else {
                     const initialCloudData = queuedData || CONTACT_DATA || DEFAULT_DATA;
                     void saveProfileToCloud(initialCloudData);
                 }
-            }, () => setSyncStatus("SYNC: OFFLINE", false));
+
+                syncUnsubscribe = firebaseClient.onSnapshot(getProfileDocRef(sharedAppId), (snap) => {
+                    setSyncStatus("SYNC: CONNECTED", true);
+                    const nextQueuedData = loadPendingCloudSave();
+                    if (snap.exists()) {
+                        const rawData = snap.data() || {};
+                        const remoteData = resolveStoredProfileData(rawData);
+                        const keepQueuedVersion = nextQueuedData && getDataTimestamp(nextQueuedData) > getDataTimestamp(remoteData);
+                        if (keepQueuedVersion) {
+                            CONTACT_DATA = nextQueuedData;
+                            cacheContactData(CONTACT_DATA);
+                            renderUI();
+                            void saveProfileToCloud(CONTACT_DATA);
+                            return;
+                        }
+
+                        CONTACT_DATA = remoteData;
+                        cacheContactData(CONTACT_DATA);
+                        renderUI();
+                        if (nextQueuedData && getDataTimestamp(remoteData) >= getDataTimestamp(nextQueuedData)) {
+                            clearPendingCloudSave();
+                        }
+                        if (rawData._profileKey !== CONTACT_DATA._profileKey || rawData.logo !== CONTACT_DATA.logo) {
+                            void saveProfileToCloud(CONTACT_DATA);
+                        }
+                    } else {
+                        const initialCloudData = nextQueuedData || CONTACT_DATA || DEFAULT_DATA;
+                        void saveProfileToCloud(initialCloudData);
+                    }
+                }, () => {
+                    if (syncUnsubscribe) {
+                        syncUnsubscribe();
+                        syncUnsubscribe = null;
+                    }
+                    isCloudSynced = false;
+                    setSyncStatus("SYNC: OFFLINE", false);
+                });
+
+                return true;
+            })();
+
+            try {
+                return await syncStartPromise;
+            } finally {
+                syncStartPromise = null;
+            }
         }
 
         function loadLocalData() {
@@ -1134,7 +1242,10 @@
                 // FIX: Switch view BEFORE cloud sync so the UI feels instant,
                 // but cloud sync now happens in the background WITH proper image upload.
                 window.toggleView('card');
-                await saveProfileToCloud(CONTACT_DATA);
+                const cloudSaved = await saveProfileToCloud(CONTACT_DATA);
+                if (!cloudSaved) {
+                    throw new Error("Changes were saved on this device only. Cloud sync is not available right now.");
+                }
                 saveButton.textContent = "Saved ✓";
 
             } catch (err) {
@@ -1156,7 +1267,10 @@
             logoImagePreviewBase64 = "";
             portfolioPreviewBase64 = "";
             window.toggleView('card');
-            void saveProfileToCloud(resetData);
+            const cloudSaved = await saveProfileToCloud(resetData);
+            if (!cloudSaved) {
+                alert("Profile reset was saved on this device only. Cloud sync is not available right now.");
+            }
         };
 
         document.getElementById('vcfButton').onclick = () => {
